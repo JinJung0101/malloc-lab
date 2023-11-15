@@ -36,10 +36,9 @@ team_t team = {
 };
 
 /* single word (4) or double word (8) alignment */
-#define ALIGNMENT 8
 #define WSIZE 4
 #define DSIZE 8
-#define CHUNKSIZE (1<<12)
+#define CHUNKSIZE (1<<10)
 
 #define MAX(x, y) ((x) > (y)? (x) : (y))
 
@@ -57,18 +56,15 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
-/* rounds up to the nearest multiple of ALIGNMENT */
-#define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
-
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
-
+// Declaration
 static void *heap_listp;
-/* */
+static void *last_bp;
+
 int mm_init(void);
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
-static void *find_fit(size_t asize);
+static void *next_fit(size_t asize);
 static void place(void *bp, size_t asize);
 void *mm_malloc(size_t size);
 void mm_free(void *bp);
@@ -92,6 +88,9 @@ int mm_init(void)
 
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
         return -1;
+
+    // heap_listp는 void였기 때문에 last_bp에 맞게 char형으로 변환
+    last_bp = (char *)heap_listp; 
     return 0;
 }
 
@@ -111,6 +110,18 @@ static void *extend_heap(size_t words)
     return coalesce(bp);
 }
 
+/*
+ * mm_free - Freeing a block does nothing.
+ */
+void mm_free(void *bp)
+{
+    size_t size = GET_SIZE(HDRP(bp));
+
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+    coalesce(bp);
+}
+
 static void *coalesce(void *bp)
 {
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
@@ -118,6 +129,7 @@ static void *coalesce(void *bp)
     size_t size = GET_SIZE(HDRP(bp));
 
     if (prev_alloc && next_alloc) {
+        last_bp = bp;
         return bp;
     }
 
@@ -140,26 +152,43 @@ static void *coalesce(void *bp)
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
+    last_bp = bp;
     return bp;
 }
 
-// 힙에서 주어진 크기(asize)의 블록을 할당할 수 있는 적절한 위치를 찾는 함수
-static void *find_fit(size_t asize) 
+// next_fit: 최근에 할당된 블록 다음부터 검색을 시작하여 적합한 블록을 찾는 함수
+static void *next_fit(size_t asize) 
 {
-    void *bp; // 힙을 순회하면서 각 블록을 가리킬 블록 포인터
+    // 최근에 할당된 블록의 위치를 가리키는 포인터
+    void *bp = last_bp; 
 
-    //  힙의 시작부터 끝까지 블록을 순회
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-        // 현재 블록이 할당되지 않았고, 그 크기가 요청된 크기(asize)보다 크거나 같을 경우를 체크
-        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
-            // 적절한 위치를 찾은 경우, 해당 위치의 블록 포인터를 반환
+    // bp를 다음 블록부터 힙의 끝까지 순회
+    for (bp = NEXT_BLKP(bp); GET_SIZE(HDRP(bp)) != 0; bp = NEXT_BLKP(bp)) {
+        // 현재 블록이 할당되지 않았고, 그 크기가 요청된 크기 이상인지 확인
+        if (!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= asize) {
+            // last_bp를 현재 블록으로 업데이트
+            last_bp = bp;
             return bp;
         }
     }
-    // 요청된 크기의 블록을 할당할 수 있는 공간이 힙에 없음을 의미
-    return NULL;
 
+    // 힙의 시작 위치(heap_listp)로 설정
+    bp = heap_listp;
+    // bp가 최근에 할당된 블록(last_bp) 이전을 가리킬 때까지 반복
+    while (bp < last_bp) {
+        //  bp를 다음 블록으로 이동
+        bp = NEXT_BLKP(bp);
+        // 현재 블록이 할당되지 않았고, 그 크기가 요청된 크기 이상인지 확인
+        if (!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= asize) {
+            // last_bp를 현재 블록으로 업데이트
+            last_bp = bp;
+            return bp;
+        }
+    }
+    // 요청된 크기의 빈 블록을 찾지 못했으면 NULL
+    return NULL;
 }
+
 
 // 주어진 블록(bp)에 주어진 크기(asize)의 블록을 할당하는 함수
 static void place(void *bp, size_t asize)
@@ -201,50 +230,56 @@ void *mm_malloc(size_t size)
     else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
-    if ((bp = find_fit(asize)) != NULL) {
+    if ((bp = next_fit(asize)) != NULL) {
         place(bp, asize);
+        last_bp = bp;
         return bp;
     }
 
     extendsize = MAX(asize, CHUNKSIZE);
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL)
         return NULL;
+
     place(bp, asize);
+    last_bp = bp;
     return bp;
 }
 
 /*
- * mm_free - Freeing a block does nothing.
+ * mm_realloc - 메모리 블록의 크기를 재조정하는 데 사용되며, 필요에 따라 메모리 블록의 병합이나 새로운 블록의 할당을 수행
  */
-void mm_free(void *bp)
+void *mm_realloc(void *bp, size_t size)
 {
-    size_t size = GET_SIZE(HDRP(bp));
-
-    PUT(HDRP(bp), PACK(size, 0));
-    PUT(FTRP(bp), PACK(size, 0));
-    coalesce(bp);
-}
-
-/*
- * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
- */
-void *mm_realloc(void *ptr, size_t size)
-{
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
+    size_t old_size = GET_SIZE(HDRP(bp));
+    size_t new_size = size + (2 * WSIZE);
     
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
-      return NULL;
-    // copySize = GET_SIZE((char*)oldptr - ((sizeof(size_t))+(DSIZE-1)));
-    copySize = GET_SIZE((HDRP(oldptr))); 
-    
-    if (size < copySize)
-      copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    // 요청된 새로운 크기가 기존 블록의 크기보다 작거나 같으면, 블록의 크기 변경할 필요 X
+    if (new_size <= old_size) {
+        return bp;
+    }
+    else {
+        // 인접한 다음 블록(NEXT_BLKP(bp))이 할당되어 있는지(next_alloc) 확인
+        size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+        // 현재 블록과 인접한 다음 블록의 크기 합(current_size)가 new_size보다 크거나 같은지 확인
+        size_t current_size = old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)));
+
+        // 인접한 다음 블록이 할당되지 않았고, 두 블록의 크기 합이 new_size보다 크거나 같다면
+        if (!next_alloc && current_size >= new_size) {
+            // 새로운 블록의 헤더와 푸터를 업데이트
+            PUT(HDRP(bp), PACK(current_size, 1));
+            PUT(FTRP(bp), PACK(current_size, 1));
+            return bp;
+        }
+        // new_size크기의 새로운 블록을 할당, 새로운 블록에 데이터를 저장(place),
+        // 기존 블록의 데이터를 새로운 블록으로 복사(memcpy), 기존 블록을 해제(mm_free), 새로운 블록의 포인터 반환
+        else {
+            void *new_bp = mm_malloc(new_size);
+            place(new_bp, new_size);
+            memcpy(new_bp, bp, new_size);
+            mm_free(bp);
+            return new_bp;
+        }
+    }
 }
 
 
