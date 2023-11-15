@@ -143,35 +143,46 @@ static void *coalesce(void *bp)
     return bp;
 }
 
+// 힙에서 주어진 크기(asize)의 블록을 할당할 수 있는 적절한 위치를 찾는 함수
 static void *find_fit(size_t asize) 
 {
-    void *bp;
+    void *bp; // 힙을 순회하면서 각 블록을 가리킬 블록 포인터
 
+    //  힙의 시작부터 끝까지 블록을 순회
     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+        // 현재 블록이 할당되지 않았고, 그 크기가 요청된 크기(asize)보다 크거나 같을 경우를 체크
         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+            // 적절한 위치를 찾은 경우, 해당 위치의 블록 포인터를 반환
             return bp;
         }
     }
+    // 요청된 크기의 블록을 할당할 수 있는 공간이 힙에 없음을 의미
     return NULL;
 
 }
 
+// 주어진 블록(bp)에 주어진 크기(asize)의 블록을 할당하는 함수
 static void place(void *bp, size_t asize)
 {
     size_t csize = GET_SIZE(HDRP(bp));
 
+    //요청된 크기를 할당한 후에도 새로운 블록을 생성할 수 있는지를 체크
     if ((csize - asize) >= (2*DSIZE)) {
+        // 요청된 크기의 블록을 할당
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
+        // 남은 공간에 새로운 블록을 생성
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize - asize, 0));
         PUT(FTRP(bp), PACK(csize - asize, 0));
     }
+    // 요청된 크기를 할당한 후에 충분한 공간이 남지 않는다면, 현재 블록 전체를 요청된 크기로 할당
     else {
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
 }
+
 /* 
  * mm_malloc - Allocate a block by incrementing the brk pointer.
  *     Always allocate a block whose size is a multiple of the alignment.
@@ -200,14 +211,6 @@ void *mm_malloc(size_t size)
         return NULL;
     place(bp, asize);
     return bp;
-    // int newsize = ALIGN(size + SIZE_T_SIZE);
-    // void *p = mem_sbrk(newsize);
-    // if (p == (void *)-1)
-	// return NULL;
-    // else {
-    //     *(size_t *)p = size;
-    //     return (void *)((char *)p + SIZE_T_SIZE);
-    // }
 }
 
 /*
